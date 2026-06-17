@@ -9,6 +9,7 @@ This repository collects the evolving theory, mathematical audits, and code revi
 - `docs/iterative_bayesian_wk_optimization_v13_2.md` - v13.2 iterative Bayesian W/H/K/block posterior-coupling optimization plan.
 - `v13_2_1_full_diagnostics_release/` - v13.2.1 runnable full-diagnostics code, configs, README, and notebook.
 - `v13_3_psm_spectral_release/` - v13.3 PSM spectral, spatial-prior, EB-shrink, and BGM block comparison release.
+- `v13_4_loss_calibrated_psm_release/` - v13.4 loss-calibrated PSM selection with Binder risk, PSM-NMF, spatial hierarchical, and weighted-SBM/MDL diagnostics.
 
 ## Working Convention
 
