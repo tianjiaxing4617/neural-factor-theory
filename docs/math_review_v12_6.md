@@ -1,1448 +1,842 @@
-# v12.6 神经轨迹 Factor / Block 模型：数学思路、推导过程与问题审查
+# v12.6 神经轨迹 Factor / Block 模型：数学思路、推导与问题审查
 
-## 0. 先给结论
-
-目前这条模型线已经形成了一个相当清楚的数学结构：
-
-1. 先不直接恢复“真实 latent factor”，而是恢复神经数据中可重复、可验证的 reliable subspace。
-2. 再在这个 reliable subspace 内寻找可解释 component。
-3. 最后把 components 组织成功能 block。
-
-也就是说，当前模型不是：
-
-```text
-X -> 直接恢复真实 factor
-```
-
-而是：
-
-```text
-X
--> split-repeat reliable subspace, K
--> localized components
--> H/W dependency graph
--> functional blocks, F
-```
-
-这个思路是对的，尤其是把 `K discovery` 和 `F interpretation` 分开，是目前最稳的理论内核。
-
-但现在模型的主要问题也很清楚：**K 的可靠方向发现比较稳，F/block 解释仍然高度依赖 localization、z-order 和 graph score。** 换句话说，当前最危险的地方不是“能不能重构”，而是“从可靠 subspace 旋转成哪些 components，再把它们分成哪些 blocks”。
+> 这一版专门把数学部分改成 GitHub 可渲染的 LaTeX 公式。阅读目标不是“像代码一样跑一遍”，而是像论文推导一样看清楚：模型在估计什么、哪些量是可识别的、哪些步骤目前仍有数学或统计风险。
 
 ---
 
-## 1. 数据与符号
+## 0. 总览
 
-设有多 trial 神经数据：
+我们目前的理论主线已经从早期的“找一组神经 latent factors”，逐渐变成了更稳健的三层结构：
 
-```text
-X ∈ R^{R × T × N}
-```
+1. 先从重复 split 中寻找可靠的低维子空间；
+2. 再在这个可靠子空间里寻找可解释的 localized components；
+3. 最后把 components 聚合成 function blocks，并用图结构描述 block 之间的关系。
 
-其中：
+用最简洁的数学语言说，当前版本不是直接声称每一个 recovered component 都等于一个真实 latent factor，而是声称：
 
-- `R` 是 trial 数；
-- `T` 是每个 trial 的时间点数；
-- `N` 是神经元数；
-- 展平后记为：
+$$
+\text{data}
+\longrightarrow
+\text{reliable subspace}
+\longrightarrow
+\text{localized components}
+\longrightarrow
+\text{block graph}.
+$$
 
-```text
-M = R T
-X_flat ∈ R^{M × N}
-```
-
-当前 toy 中假设有：
-
-```text
-F = 3                 functional groups
-C = 4                 components per group
-K_true = F C = 12
-```
-
-第 `g` 个功能组内有 `C` 个 component。整体信号写作：
-
-```text
-X = H W^T + ε
-```
-
-其中：
-
-```text
-H ∈ R^{M × K}
-W ∈ R^{N × K}
-ε ∈ R^{M × N}
-```
-
-第 `k` 个 component 的贡献为：
-
-```text
-E_k = h_k w_k^T
-```
-
-第 `g` 个 group 的贡献为：
-
-```text
-X_g = Σ_{m=1}^C h_{g,m} w_{g,m}^T
-```
-
-从 v1 到 v12.6 的核心思想可以压缩成一句话：
-
-> 我们不能把每一个 recovered component 直接当成真实 latent factor；我们只能先找可靠表达子空间，再在可识别条件允许的范围内解释 component 和 block。
+这一步很关键。它把“单个 component 是否真实”这个高风险命题，改成了“哪些子空间、哪些局部模式、哪些 block 关系在 split 下稳定”这个更可检验的问题。
 
 ---
 
-## 2. Toy 生成模型：为什么 v12.5/v12.6 要改 toy
+## 1. 数据与基础分解
 
-### 2.1 原 toy 的不可识别性
+设神经数据为
 
-旧 toy 的问题是，同一个功能组内的多个 W loading 近似共线：
+$$
+X \in \mathbb{R}^{R \times T \times N},
+$$
 
-```text
-w_{g,m}(n) ≈ a_{g,m} u_g(n)
-```
+其中 $R$ 是 trial 数，$T$ 是每个 trial 的时间点数，$N$ 是神经元数。将 trial 与 time 展平成样本维度：
 
-于是第 `g` 个 group 的信号：
+$$
+M = R T,
+\qquad
+X_{\mathrm{flat}} \in \mathbb{R}^{M \times N}.
+$$
 
-```text
+基础 factor 模型写成
+
+$$
+X_{\mathrm{flat}}
+= H W^\top + \varepsilon,
+$$
+
+其中
+
+$$
+H \in \mathbb{R}^{M \times K},
+\qquad
+W \in \mathbb{R}^{N \times K},
+\qquad
+\varepsilon \in \mathbb{R}^{M \times N}.
+$$
+
+第 $k$ 个 component 对数据的 rank-1 贡献为
+
+$$
+E_k = h_k w_k^\top.
+$$
+
+如果第 $g$ 个功能组包含 $C$ 个 components，则该组贡献为
+
+$$
+X_g
+= \sum_{m=1}^{C} h_{g,m} w_{g,m}^{\top}.
+$$
+
+这里的核心辨析是：$K$ 是算法恢复的 component 数，不一定等于真实功能组数 $F$。真实功能结构更可能出现在 components 的组合、子空间和 graph level 上。
+
+---
+
+## 2. Toy 模型的可识别性问题
+
+### 2.1 旧 toy 的退化结构
+
+旧 toy 的主要问题是，同一功能组内多个 $W$ loading 近似共线：
+
+$$
+w_{g,m}(n) \approx a_{g,m} u_g(n).
+$$
+
+于是第 $g$ 个 group 的信号为
+
+$$
+\begin{aligned}
 X_g(t,n)
-= Σ_m h_{g,m}(t) w_{g,m}(n)
-≈ Σ_m h_{g,m}(t) a_{g,m} u_g(n)
-= h̃_g(t) u_g(n)
-```
+&= \sum_m h_{g,m}(t) w_{g,m}(n) \\
+&\approx \sum_m h_{g,m}(t) a_{g,m} u_g(n) \\
+&= \widetilde{h}_g(t) u_g(n),
+\end{aligned}
+$$
 
-其中：
+其中
 
-```text
-h̃_g(t) = Σ_m a_{g,m} h_{g,m}(t)
-```
+$$
+\widetilde{h}_g(t)
+= \sum_m a_{g,m} h_{g,m}(t).
+$$
 
-这说明：虽然名义上 group 内有 4 个 H component，但观测数据中主要只看到一个合成 timecourse 乘以一个 spatial profile。
+这说明原来的 $C$ 个 components 在观测层面坍缩成了一个 rank-1 group：
 
-也就是：
+$$
+\operatorname{rank}(X_g) \approx 1.
+$$
 
-```text
-rank(W_g) ≈ 1
-rank(X_g) ≈ 1
-```
+因此旧 toy 虽然设定了
 
-因此，在这种 toy 上要求模型恢复：
+$$
+K_{\mathrm{true}} = F C,
+$$
 
-```text
-K = 12
-F = 3
-每组 4 个 component
-```
+但从数据角度真正可稳定识别的更接近
 
-是不公平的。因为数据本身并没有给出 12 个独立方向的可观测证据。
+$$
+K_{\mathrm{identifiable}} \approx F.
+$$
 
-这就是 v12.5/v12.6 的第一个重要修正：**先让 toy 本身进入 block-identifiable regime。**
+这就是旧版本中 $K$ 经常回到 $F$ 附近的数学原因：算法不是没有能力，而是 toy 本身没有给出足够的独立方向。
 
-### 2.2 v12.6 clustered-Gaussian W
+### 2.2 v12.5/v12.6 的改进
 
-现在每个 component 都有自己的 Gaussian loading：
+新 toy 把每个 functional group 放在连续的 latent coordinate $z_n$ 上，并让同组内不同 component 的中心位置、宽度、时间 pattern 和 label 调制有所区别。
 
-```text
-w_{g,m}(z_n)
-= a_{g,m} exp(-(z_n - μ_{g,m})^2 / (2 σ_{g,m}^2))
-  + η_{g,m}(n)
-```
+一个典型的 spatial loading 可以写成
 
-同一 group 内 component 的中心形成局部 cluster：
+$$
+w_{g,m}(n)
+= A_{g,m}
+\exp\!\left(
+-\frac{(z_n-\mu_{g,m})^2}{2\sigma_{g,m}^2}
+\right)
++ \eta_{g,m}(n).
+$$
 
-```text
-μ_{g,m} = μ_g + δ_{g,m}
-δ_{g,m} ∈ [-d_g, d_g]
-```
+其中 $\mu_{g,m}$ 和 $\sigma_{g,m}$ 控制空间位置与宽度，$\eta_{g,m}$ 是扰动或噪声。为了避免同组 components 完全共线，需要满足近似的分离条件：
 
-所以同组 component：
+$$
+|\mu_{g,m} - \mu_{g,m'}|
+\gtrsim c \cdot \min(\sigma_{g,m}, \sigma_{g,m'}).
+$$
 
-- 空间上相近；
-- 但不完全共线；
-- 因此有机会被恢复为多个可分辨 component；
-- 再由 block graph 合并成功能 group。
+同时，$H$ 端也需要有足够独立的时间/label 变化。若只是在 $W$ 端制造局部差异，而 $H$ 端仍高度共线，整体 rank 仍会偏低。
 
-这一步的数学意义是：
+### 2.3 有效秩
 
-```text
-rank(W_g) 不再约等于 1
-```
+对某一组的 loading 矩阵
 
-而是希望：
+$$
+W_g = [w_{g,1},\ldots,w_{g,C}]
+\in \mathbb{R}^{N \times C},
+$$
 
-```text
-effective_rank(W_g) 接近 C
-```
+计算奇异值
 
-### 2.3 H-side 也必须可识别
+$$
+s_1 \ge s_2 \ge \cdots \ge s_C.
+$$
 
-只让 W-side 可识别还不够。若 H-side 的内部维度也高度相关，例如：
+归一化后
 
-```text
-q, q^2, q^3, q^4
-```
+$$
+p_i = \frac{s_i}{\sum_j s_j},
+$$
 
-在实际时间分布上接近低秩，那么 group 仍然不可识别。
+有效秩可以写成
 
-因此 v12.6 使用 whitened powers：
+$$
+r_{\mathrm{eff}}(W_g)
+= \exp\!\left(
+-\sum_i p_i \log p_i
+\right).
+$$
 
-```text
-Φ_g = [q_g, q_g^2, q_g^3, q_g^4]
-H_g = QR(zscore(Φ_g))
-```
+如果
 
-或者等价地理解为：
+$$
+r_{\mathrm{eff}}(W_g) \ll C,
+$$
 
-```text
-H_g = Φ_g (Φ_g^T Φ_g + ηI)^(-1/2)
-```
+那么 toy 名义上有 $C$ 个 components，但数据实际只支持更少的独立方向。这个指标应该作为 toy 生成阶段的诊断量，而不是只在 recovery 后解释结果。
 
-目标是让：
-
-```text
-effective_rank(H_g) 接近 C
-effective_rank(W_g) 接近 C
-```
-
-这就是 identifiability audit 的数学意义。
+**当前问题：** v12.6 已经比旧 toy 好很多，但代码仍需要明确报告每个 group 的 $r_{\mathrm{eff}}(W_g)$、$r_{\mathrm{eff}}(H_g)$ 和 $r_{\mathrm{eff}}(X_g)$，否则我们无法判断失败来自算法还是生成模型本身。
 
 ---
 
-## 3. 可识别性审计
+## 3. K discovery：从 split 稳定性到 evidence
 
-对每个 true group，计算 H/W 的奇异值：
+### 3.1 split 视角
 
-```text
-s_1, ..., s_C
-```
+对不同 split $s$，算法得到一个估计的 component 子空间：
 
-用 entropy effective rank：
+$$
+\widehat{U}^{(s)}_K
+\in \mathbb{R}^{N \times K}.
+$$
 
-```text
-p_i = s_i / Σ_j s_j
-effective_rank = exp(-Σ_i p_i log p_i)
-```
+两个 split 之间的子空间相似度可以用主角度表示。若奇异值为
 
-如果：
+$$
+\sigma_i
+\left(
+(\widehat{U}^{(s_1)}_K)^\top
+\widehat{U}^{(s_2)}_K
+\right),
+$$
 
-```text
-effective_rank(H_g) ≈ C
-effective_rank(W_g) ≈ C
-```
+则可以定义 reliability：
 
-说明这个 group 在 toy 中确实有 C 个可观测内部方向。
+$$
+C_{\mathrm{rel}}(K)
+= \frac{1}{K}
+\sum_{i=1}^{K}
+\sigma_i^2.
+$$
 
-如果其中任何一边接近 1：
+直觉上，如果 $K$ 太小，模型欠拟合；如果 $K$ 太大，额外方向主要是噪声，split 之间不稳定。
 
-```text
-effective_rank(H_g) ≈ 1
-或
-effective_rank(W_g) ≈ 1
-```
+### 3.2 residual discovery
 
-那么要求模型恢复 4 个 component 就不合理。
+当前代码采用逐步 residual 的想法。第 $q$ 步残差为
 
-### 这里的潜在问题
+$$
+R_q
+= X_{\mathrm{flat}}
+- \sum_{k=1}^{q}
+\widehat{h}_k \widehat{w}_k^\top.
+$$
 
-1. 这个 audit 在 toy 中可以用 true H/W；真实数据中没有 true H/W。
-2. 因此真实数据需要替代指标，例如 split subspace rank、condition number、subspace survival、held-out perturbation sensitivity。
-3. 当前 audit 只能说明 toy 是否公平，不能直接证明真实数据中的 K/F 可识别。
+从残差中继续寻找新方向：
+
+$$
+(\widehat{h}_{q+1}, \widehat{w}_{q+1})
+= \operatorname{Factorize}(R_q).
+$$
+
+这是合理方向，因为它避免了一次性分解把强信号吞掉弱信号。但 residual 方法有一个隐含风险：后续 component 的质量依赖前面 component 的估计误差。如果早期方向稍微偏了，残差会携带结构性伪影。
+
+### 3.3 evidence / free-energy 直觉
+
+理想情况下，对每个候选 $K$，我们想比较：
+
+$$
+\log p(X \mid K).
+$$
+
+如果采用高斯噪声近似：
+
+$$
+X = H_K W_K^\top + \varepsilon,
+\qquad
+\varepsilon \sim \mathcal{N}(0,\sigma^2 I),
+$$
+
+则负对数似然的主要部分为
+
+$$
+-\log p(X \mid H_K,W_K,\sigma^2)
+\propto
+\frac{1}{2\sigma^2}
+\left\|X-H_K W_K^\top\right\|_F^2
++ \frac{MN}{2}\log\sigma^2.
+$$
+
+如果加入复杂度惩罚，可以得到类似 BIC 的 score：
+
+$$
+\operatorname{BIC}(K)
+= -2 \log p(X \mid \widehat{\theta}_K)
++ d_K \log(MN),
+$$
+
+其中 $d_K$ 是模型自由度。
+
+当前 v12.6 的 evidence 更像是启发式组合：
+
+$$
+S_K
+= \alpha \cdot \operatorname{Reliability}(K)
++ \beta \cdot \operatorname{ExplainedVar}(K)
+- \gamma \cdot \operatorname{Penalty}(K).
+$$
+
+这个方向可以工作，但目前最大的问题是：某些 evidence 量同时参与了搜索和验证，导致 validation 不再是独立检验。
+
+### 3.4 K discovery 的核心风险
+
+**K1. 验证集双重使用。**  
+如果同一个 validation split 既用于选择 residual candidate，又用于评价最终 $K$，那么得到的 $K$ evidence 会偏乐观。严格做法应该至少分三层：
+
+$$
+\text{train}
+\longrightarrow
+\text{select candidates}
+\longrightarrow
+\text{held-out validation}.
+$$
+
+**K2. reliability 只能证明子空间稳定，不能直接证明 component 唯一。**  
+如果存在任意正交旋转 $Q$：
+
+$$
+H W^\top
+= (H Q)(W Q)^\top,
+$$
+
+则数据重构不变。split 稳定性若只在 subspace 上成立，并不能自动推出每个 column 的解释是唯一的。
+
+**K3. 最大接受 $K$ 与最终选择 $K$ 的统计量混淆。**  
+报告时必须区分：
+
+$$
+K_{\mathrm{accepted,max}}
+\quad \text{和} \quad
+K_{\mathrm{selected}}.
+$$
+
+如果最终 $R^2$ 来自最大接受 $K$，却被解释成 selected $K$ 的性能，就会高估模型。
+
+**K4. 需要 null model。**  
+每个 $K$ 的 score 应该与 permutation 或 phase-shuffle null 比较：
+
+$$
+Z_K
+=
+\frac{
+S_K - \mathbb{E}[S_K^{\mathrm{null}}]
+}{
+\operatorname{sd}(S_K^{\mathrm{null}})
+}.
+$$
+
+没有 null，稳定性和 explained variance 的绝对值很难解释。
 
 ---
 
-## 4. K discovery：从 PCA variance 到 split-repeat reliability
+## 4. Localization：从可靠子空间到局部 components
 
-### 4.1 为什么不是 PCA
+### 4.1 神经元坐标与 Fiedler ordering
 
-PCA 找的是最大方差方向：
+当前模型把神经元之间的相似度写成图权重：
 
-```text
-maximize_w Var(Xw)
-```
+$$
+A_{ij} = \operatorname{sim}(x_i,x_j).
+$$
 
-但我们真正关心的是可重复方向：
+图 Laplacian 为
 
-```text
-同一神经 loading direction 是否在不同 trial split 中产生一致表达？
-```
+$$
+L = D - A,
+\qquad
+D_{ii} = \sum_j A_{ij}.
+$$
 
-所以当前模型构造 split views。
+Fiedler vector 是
 
-### 4.2 split views
+$$
+z
+= \arg\min_{v \perp \mathbf{1},\,\|v\|=1}
+v^\top L v.
+$$
+
+这个 $z$ 给出一维 ordering，用来描述 loading 是否局部集中。
 
-对每次 split，把 trials 分成两半：
+### 4.2 局部 dictionary
 
-```text
-A_s(t,n) = mean_{r in split A} X_r(t,n)
-B_s(t,n) = mean_{r in split B} X_r(t,n)
-```
+一个局部 bump basis 可以写成
 
-把所有 split/time 拼接：
+$$
+\phi_j(n)
+=
+\exp\!\left(
+-\frac{(z_n-c_j)^2}{2\sigma_j^2}
+\right).
+$$
 
-```text
-A ∈ R^{S T × N}
-B ∈ R^{S T × N}
-```
+将所有 basis 组成
 
-其中 `S` 是 split 数。
+$$
+\Phi
+=
+[\phi_1,\ldots,\phi_J]
+\in \mathbb{R}^{N \times J}.
+$$
 
-构造可靠协方差：
+如果某个 loading $w_k$ 可以被少数局部 basis 表示：
 
-```text
-C_rel = (A^T B + B^T A) / (2 S T)
-```
+$$
+w_k \approx \Phi a_k,
+\qquad
+\|a_k\|_0 \ll J,
+$$
 
-求特征分解：
+则该 component 具有 localization 解释。
 
-```text
-C_rel w_k = λ_k w_k
-```
+### 4.3 rotation 的本质
 
-如果 `w_k` 是真实可重复方向，则：
+从 factorization 得到的 $W$ 通常只确定到旋转：
 
-```text
-h_A = A w_k
-h_B = B w_k
-```
+$$
+W \sim WQ,
+\qquad
+Q^\top Q = I.
+$$
 
-应该高度一致。
+因此 localization 步骤实际是在可靠子空间内寻找一个旋转 $Q$，使得
 
-### 4.3 null threshold
+$$
+\widehat{W}_{\mathrm{loc}}
+= \widehat{W}_{\mathrm{sub}} Q
+$$
 
-为了判断 `λ_k` 是否超过偶然水平，构造 null：
+具有更强的局部性。可以把目标写成：
 
-```text
-B_null = B with permuted neuron identity
-```
+$$
+Q^\star
+=
+\arg\max_{Q^\top Q=I}
+\sum_{k=1}^{K}
+\operatorname{Locality}
+\left(
+\widehat{w}_k(Q)
+\right).
+$$
 
-得到 null eigenvalue distribution。
+这一步是整个模型的解释核心：subspace 由 split reliability 支撑，component 解释由 localization criterion 支撑。
 
-可靠方向条件：
+### 4.4 localization 的当前问题
 
-```text
-λ_k > quantile_0.95(λ_k^null)
-```
+**L1. mirror orientation bug。**  
+当前代码用类似下面的规则比较 $z$ 与 $1-z$：
 
-### 4.4 residual-driven iterative K
+$$
+\left|
+\operatorname{corr}(1-z,y)
+\right|
+\quad \text{vs.} \quad
+\left|
+\operatorname{corr}(z,y)
+\right|.
+$$
+
+但因为
 
-当前不是一次性取 top-K，而是迭代式发现：
+$$
+\operatorname{corr}(1-z,y)
+=
+-\operatorname{corr}(z,y),
+$$
 
-```text
-W_0 = empty
-R_0 = X
-```
+所以两边取绝对值后永远相等：
 
-第 `K+1` 步：
+$$
+\left|
+\operatorname{corr}(1-z,y)
+\right|
+=
+\left|
+\operatorname{corr}(z,y)
+\right|.
+$$
 
-```text
-R_K = X - projection_X_on_span(W_K)
-```
+这意味着 mirror orientation 实际上没有被正确选择。应该改用带符号的 correlation，或引入明确的 anchor。
 
-在 residual 上重复 split-repeat reliability：
+**L2. residualized loading 的元数据不一致。**  
+如果先将 $w_k$ 投影掉已解释方向：
+
+$$
+w_k^{\perp}
+=
+w_k
+-
+P_{\mathcal{S}_{k-1}} w_k,
+$$
+
+那么后续报告的 $\mu_k,\sigma_k$ 应该基于 $w_k^{\perp}$ 重新计算，而不能继续使用原始 $w_k$ 的 metadata。
+
+**L3. normalization 可能破坏 diversity penalty。**  
+如果 diversity penalty 用的是 residual norm：
+
+$$
+\left\|w_k^{\perp}\right\|_2,
+$$
+
+但代码在计算前后强制归一化：
+
+$$
+\frac{w_k^{\perp}}{\|w_k^{\perp}\|_2},
+$$
+
+那么 norm 本身携带的“是否真的有新方向”的信息会被抹掉。
+
+**L4. localization 不等于真实功能组。**  
+局部性只能说明 component 在 $z$ ordering 上集中，不能单独证明它对应一个功能模块。还需要 label dependency、split stability 和 graph evidence 共同支撑。
+
+---
 
-```text
-w_{K+1} = top eigenvector of C_rel(R_K)
-```
+## 5. H dependency：时间与 label 的解释层
+
+对每个 component，时间/label embedding 为 $h_k$。若行为标签或任务变量为 $Y$，可以定义依赖强度：
+
+$$
+D_k
+=
+\operatorname{Dep}(h_k,Y).
+$$
+
+若用 distance correlation，可以写成：
+
+$$
+\operatorname{dCor}^2(h_k,Y)
+=
+\frac{
+\operatorname{dCov}^2(h_k,Y)
+}{
+\operatorname{dVar}(h_k)\operatorname{dVar}(Y)
+}.
+$$
+
+对两个 components 的 H-side 依赖可以写成：
+
+$$
+P^H_{ij}
+=
+\operatorname{Dep}(h_i,h_j).
+$$
+
+关键问题是：如果 $h_k$ 来自同一数据的 factorization，然后再用同一数据评估 dependency，就可能出现过拟合解释。更稳妥的做法是 cross-fit：
+
+$$
+\widehat{w}_k^{\mathrm{train}}
+\longrightarrow
+\widehat{h}_k^{\mathrm{test}}
+=
+X_{\mathrm{test}}
+\widehat{w}_k^{\mathrm{train}}.
+$$
+
+然后只在 test side 评估 dependency。
+
+---
+
+## 6. Block graph：components 到 function blocks
+
+### 6.1 W-side 相似性
+
+component $i$ 与 $j$ 的 loading 相似性可以写为
+
+$$
+P^W_{ij}
+=
+\left|
+\operatorname{corr}(w_i,w_j)
+\right|.
+$$
+
+也可以加入 spatial overlap：
+
+$$
+O^W_{ij}
+=
+\frac{
+\sum_n |w_i(n)| |w_j(n)|
+}{
+\sqrt{
+\sum_n w_i(n)^2
+}
+\sqrt{
+\sum_n w_j(n)^2
+}
+}.
+$$
+
+### 6.2 H-side 依赖
+
+H-side 依赖可以写成
+
+$$
+P^H_{ij}
+=
+\operatorname{Dep}(h_i,h_j).
+$$
+
+如果希望强调 label-aware block，可以进一步写成条件依赖：
+
+$$
+P^{H \mid Y}_{ij}
+=
+\operatorname{Dep}(h_i,h_j \mid Y).
+$$
+
+### 6.3 split survival
+
+如果 block 在多个 split 中稳定出现，可以定义 survival：
+
+$$
+S_{ij}^{\mathrm{split}}
+=
+\mathbb{P}_{s}
+\left[
+i \sim j
+\text{ in split } s
+\right].
+$$
+
+理想的 co-association matrix 应该是：
+
+$$
+C_{ij}
+=
+\frac{1}{S}
+\sum_{s=1}^{S}
+\mathbf{1}
+\left[
+c_i^{(s)} = c_j^{(s)}
+\right].
+$$
+
+当前代码里所谓的 split survival 更像是 component-level 稳定性，还没有完全达到 pairwise block co-association 的定义。
+
+### 6.4 综合 graph score
+
+一个合理的 block graph 边权可以写成：
+
+$$
+G_{ij}
+=
+\lambda_W P^W_{ij}
++ \lambda_H P^H_{ij}
++ \lambda_S S_{ij}^{\mathrm{split}}
++ \lambda_Y P^{H \mid Y}_{ij}.
+$$
+
+然后对 $G$ 做 community detection：
+
+$$
+\widehat{B}
+=
+\operatorname{CommunityDetect}(G).
+$$
+
+最终 block 数为
+
+$$
+\widehat{F}
+=
+|\widehat{B}|.
+$$
+
+---
+
+## 7. F evidence 与 noise probe
+
+### 7.1 F evidence
+
+给定 graph partition $B$，可以定义 block-level score：
+
+$$
+\operatorname{Score}(B)
+=
+\operatorname{Within}(B)
+- \operatorname{Between}(B)
+- \lambda \operatorname{Complexity}(B).
+$$
+
+其中
+
+$$
+\operatorname{Within}(B)
+=
+\sum_{b \in B}
+\frac{1}{|b|(|b|-1)}
+\sum_{i,j \in b,\,i\ne j}
+G_{ij},
+$$
 
-再把它投影出已有子空间：
+而
 
-```text
-w_{K+1} <- (I - Q_K Q_K^T) w_{K+1}
-```
+$$
+\operatorname{Between}(B)
+=
+\frac{1}{|\mathcal{P}_{\mathrm{out}}|}
+\sum_{(i,j)\in \mathcal{P}_{\mathrm{out}}}
+G_{ij}.
+$$
 
-其中：
+当前 v12.6 的问题是，实际输出中 $F_{\mathrm{evidence}}$ 经常退化为 1。这通常意味着 graph score 或 partition penalty 过度偏向“合并所有节点”。需要检查：
 
-```text
-Q_K = orth(W_K)
-```
+$$
+\Delta \operatorname{Score}(F)
+=
+\operatorname{Score}(F)
+- \operatorname{Score}(F-1)
+$$
 
-候选方向被接受需要满足：
+是否在所有 $F>1$ 时都被惩罚项压住。
 
-```text
-λ_resid > λ_null × min_lambda_ratio
-ΔR2_val > min_gain   or   relative gain > min_rel_gain
-split_corr > min_split_corr
-```
+### 7.2 noise probe
 
-接受后：
+noise probe 的目标是判断发现的 components 是否超过噪声 baseline。可以构造：
 
-```text
-W_{K+1} = orth([W_K, w_{K+1}])
-```
+$$
+X^{\mathrm{null}}
+=
+\operatorname{Shuffle}(X),
+$$
 
-重构使用：
+并重复完整 pipeline 得到 null score：
 
-```text
-X_hat_K = X Q_K Q_K^T
-```
+$$
+S^{\mathrm{null}}_K
+=
+\operatorname{PipelineScore}(X^{\mathrm{null}},K).
+$$
 
-因此这个阶段本质上是在找：
+真实 score 的显著性为
 
-```text
-可重复、能提升 held-out reconstruction 的 neural loading subspace
-```
+$$
+p_K
+=
+\frac{
+1 + \sum_{b=1}^{B}
+\mathbf{1}
+\left[
+S_{K,b}^{\mathrm{null}} \ge S_K
+\right]
+}{
+B+1
+}.
+$$
 
-### 4.5 posthoc K
+noise probe 必须和真实 pipeline 使用同样的搜索自由度，否则会低估 false positive。
 
-由于 residual tail 也可能有微弱可靠性，模型允许先接受较多 candidate，再用 held-out gain elbow 回退：
+---
 
-```text
-若某个 accepted step 的 gain < posthoc_gain_floor
-则 K_posthoc = previous K
-```
+## 8. 当前 v12.6 代码层面的主要问题
 
-这对应 v12.5 的思想：
+### 8.1 K evidence 双重使用 validation
 
-```text
-先让 residual process 暴露 tail，再用 gain floor 判断 tail/noise regime
-```
+当前实现中，validation 信息既参与 candidate 的接受，又参与最终 evidence 的解释。这会导致：
 
-### 4.6 v12.6 K evidence proxy
+$$
+\mathbb{E}
+\left[
+S_{\mathrm{val}}(\widehat{K})
+\right]
+>
+\mathbb{E}
+\left[
+S_{\mathrm{test}}(\widehat{K})
+\right].
+$$
 
-v12.6 又加入一个 Bayesian-evidence-style stopping。
+建议：加入真正 held-out test split，或者使用 nested cross-validation。
 
-给定 K 维子空间 `Q_K`，假设：
+### 8.2 z mirror 方向选择失效
 
-```text
-X ~ Normal(0, Σ_K)
-Σ_K = Q_K diag(σ_1^2, ..., σ_K^2) Q_K^T
-      + σ_res^2 (I - Q_K Q_K^T)
-```
+如上所述，绝对相关会让 $z$ 与 $1-z$ 无法区分。这个问题应该优先修，因为它会影响所有 spatial metadata。
 
-训练集估计：
+### 8.3 localization diversity penalty 被 normalization 削弱
 
-```text
-S_train = X_train Q_K
-σ_k^2 = Var(S_train[:,k])
-σ_res^2 = mean((X_train - S_train Q_K^T)^2)
-```
+如果算法希望惩罚重复方向，就必须保留 residual norm 或 overlap 的原始尺度。归一化后再计算 norm，等价于把关键证据抹平。
 
-验证集 log likelihood：
+### 8.4 F evidence 退化
 
-```text
-LL_K =
--1/2 [
-  M_val N log(2π)
-  + M_val logdet(Σ_K)
-  + quadratic_term
-]
-```
+quick 与 rank1 debug 结果都显示 $F_{\mathrm{evidence}}=1$。这说明 block graph 目前还不能可靠恢复 toy 中设定的功能组数。
 
-其中：
+### 8.5 final $R^2$ 归属不清
 
-```text
-logdet(Σ_K)
-= Σ_k log σ_k^2 + (N-K) log σ_res^2
-```
+需要明确报告：
 
-复杂度惩罚：
+$$
+R^2(K_{\mathrm{selected}})
+\quad \text{而不是} \quad
+R^2(K_{\mathrm{accepted,max}}).
+$$
 
-```text
-Occam_K = 1/2 × complexity_weight × p_eff(K) × log(M_val)
-```
+否则会把“探索过程中最宽模型的拟合能力”误当成“最终模型的泛化性能”。
 
-其中当前代码使用：
+---
 
-```text
-p_eff(K) = K N - K(K+1)/2 + K + 1
-```
+## 9. 我目前认为最稳的理论表述
 
-最终：
+当前模型最安全、最有说服力的数学表述是：
 
-```text
-FreeEnergy_K = LL_K - Occam_K
-K_evidence = argmax_K FreeEnergy_K
-```
-
-### K 阶段目前的主要问题
-
-#### 问题 K1：validation 被二次使用
-
-candidate 接受已经用过：
-
-```text
-ΔR2_val
-```
-
-随后 evidence 又在同一批 validation trials 上算：
-
-```text
-FreeEnergy_K
-```
-
-这会造成 double dipping。严格来说，现在的 evidence 不能被称为独立 held-out model comparison。
-
-更稳的做法：
-
-```text
-train split:   发现 candidate
-validation:    调 K / acceptance
-test split:    最后 evidence comparison
-```
-
-或者使用 nested cross-validation / cross-fitting。
-
-#### 问题 K2：evidence 是 subspace covariance proxy，不是完整 factor model evidence
-
-当前 evidence 评价的是：
-
-```text
-low-rank covariance subspace
-```
+$$
+\boxed{
+\text{v12.6 recovers reliable neural subspaces and localized block candidates,}
+}
+$$
 
 而不是：
 
-```text
-H/W factor expression model
-```
+$$
+\boxed{
+\text{v12.6 uniquely identifies all true latent factors.}
+}
+$$
 
-所以它可以支持“这个 K 维 subspace 是否有预测价值”，但不能直接证明“这 K 个 components 是真实 factor components”。
+更完整地说：
 
-#### 问题 K3：complexity_weight 是经验常数
+$$
+\begin{aligned}
+X
+&\xrightarrow{\text{split reliability}}
+\widehat{\mathcal{S}}_K \\
+&\xrightarrow{\text{localized rotation}}
+\{\widehat{w}_k,\widehat{h}_k\}_{k=1}^{K} \\
+&\xrightarrow{\text{W/H/split graph}}
+\widehat{B}_1,\ldots,\widehat{B}_{\widehat{F}}.
+\end{aligned}
+$$
 
-`complexity_weight` 不是由真正的 marginal likelihood 推出来的，而是一个 tuning knob。
+其中真正被当前 evidence 支撑的是：
 
-因此不同数据规模下：
-
-```text
-quick / full / wide
-```
-
-这个惩罚是否可比，需要额外 calibration。
-
-#### 问题 K4：报告中的 final R2 不是 selected K 的 R2
-
-当前报告里的 final train/val R2 来自最大 accepted K，而不是最终 selected K。
-
-这会导致：
-
-```text
-K_selected_final = 12
-但 reported final_val_R2 是 K=20 或 K=24 的结果
-```
-
-所以报告层面需要重新计算：
-
-```text
-R2(W_final)
-```
+1. $\widehat{\mathcal{S}}_K$ 是否可靠；
+2. localized components 是否在 split 下稳定；
+3. block graph 是否显著优于 null；
+4. label-aware dependency 是否能在 held-out 数据上复现。
 
 ---
 
-## 5. 从 reliable subspace 到 localized components
+## 10. 下一步最该修的数学与代码接口
 
-K discovery 给出的是一个子空间：
+我建议按优先级处理：
 
-```text
-span(W_final)
-```
+1. 修正 $z$ mirror orientation，避免绝对相关导致方向选择无效。
+2. 把 K discovery 改成 nested 或 held-out validation，避免 evidence 双重使用。
+3. 为 toy 生成器报告 $r_{\mathrm{eff}}(W_g)$、$r_{\mathrm{eff}}(H_g)$ 和 $r_{\mathrm{eff}}(X_g)$。
+4. 重写 split survival 为真正的 pairwise co-association matrix。
+5. 重新校准 F evidence 的 merge/split penalty，避免 $F_{\mathrm{evidence}}$ 总是塌缩到 1。
+6. 区分并分别报告 $K_{\mathrm{selected}}$ 与 $K_{\mathrm{accepted,max}}$ 的 $R^2$。
 
-但功能解释需要 component。
-
-这一步的本质问题是 rotation/gauge：
-
-```text
-X ≈ H W^T = (H A)(W A^{-T})^T
-```
-
-只要 `A` 可逆，重构不变。
-
-所以，K discovery 只能稳定得到 subspace；component 解释需要额外约束。
-
-当前约束是 Gaussian localization。
-
-### 5.1 hidden neuron coordinate z
-
-给定可靠子空间基 `Q`，看每个 neuron 在子空间中的 row embedding：
-
-```text
-Q[n,:]
-```
-
-构造神经元相似度：
-
-```text
-S_ij = (cos(Q[i,:], Q[j,:]) + 1) / 2
-```
-
-建 kNN graph，计算 normalized Laplacian：
-
-```text
-L = I - D^{-1/2} A D^{-1/2}
-```
-
-取第二小特征向量作为 hidden coordinate：
-
-```text
-z_hat = Fiedler vector
-```
-
-再归一化到：
-
-```text
-z_hat ∈ [0, 1]
-```
-
-### 5.2 Gaussian dictionary
-
-在 `z_hat` 上建立 Gaussian dictionary：
-
-```text
-d_{μ,σ}(n)
-= exp(-(z_hat_n - μ)^2 / (2σ^2))
-```
-
-把 dictionary atom 投影到可靠子空间：
-
-```text
-P d = Q Q^T d
-```
-
-atom score：
-
-```text
-score(d) = cos^2(d, Q Q^T d)
-```
-
-如果一个 Gaussian atom 能被可靠子空间很好表达，它就被认为是一个可解释 component 候选。
-
-### 5.3 greedy localization
-
-当前代码贪心选择 K 个 Gaussian atoms：
-
-1. 按 subspace score 排序；
-2. 避免中心完全重复；
-3. 将新 atom 对已选择 components 做残差化；
-4. 得到 localized W columns：
-
-```text
-W_loc = [w_loc,1, ..., w_loc,K]
-```
-
-然后：
-
-```text
-H_loc = X W_loc
-```
-
-### localization 阶段目前的主要问题
-
-#### 问题 L1：z 的镜像方向校正有数学 bug
-
-当前逻辑比较：
-
-```text
-abs(corr(1-z, target)) > abs(corr(z, target))
-```
-
-但：
-
-```text
-corr(1-z, target) = -corr(z, target)
-```
-
-所以绝对值必然相等。
-
-这意味着该条件无法决定是否翻转。
-
-正确逻辑应该是：
-
-```text
-if corr(z, target) < 0:
-    z = 1 - z
-```
-
-或者在无 true target 时，对 base z 使用 orientation-invariant metric：
-
-```text
-max(corr(z, base), corr(1-z, base))
-```
-
-#### 问题 L2：diversity penalty 实际失效
-
-当前 `project_out()` 返回的是归一化后的 residual：
-
-```text
-resid = project_out(w, Q_selected)
-```
-
-然后：
-
-```text
-diversity = norm(resid)
-```
-
-由于 `resid` 已被归一化，`diversity` 基本恒为 1。
-
-所以：
-
-```text
-selection_diversity_penalty
-```
-
-几乎不起作用。
-
-应改为在归一化前计算：
-
-```text
-raw_resid = (I - Q_selected Q_selected^T) w
-diversity = norm(raw_resid) / norm(w)
-```
-
-#### 问题 L3：记录的 μ/σ 与实际 W_loc 不再完全对应
-
-当前 row 中保存的是原 dictionary atom 的：
-
-```text
-μ, σ
-```
-
-但实际用于后续 block graph 的 `W_loc` 是 residualized atom：
-
-```text
-w_use = project_out(Pd, Q_selected)
-```
-
-这个 `w_use` 可能已经不再是原始 Gaussian atom。
-
-于是后续 spatial graph 使用的：
-
-```text
-μ_i, μ_j
-```
-
-未必对应真实的 `W_loc` center。
-
-更稳的做法是 residualization 后重新估计：
-
-```text
-μ_hat, σ_hat = argmax_{μ,σ} corr^2(w_use, gaussian(z; μ,σ))
-```
-
-#### 问题 L4：当前 localization 仍是 greedy dictionary selection
-
-理论上，我们真正想做的是：
-
-```text
-在可靠 subspace 内找一个旋转 R，使 W_K R 更像 localized Gaussian components
-```
-
-即：
-
-```text
-W_loc = Q R
-maximize_R Σ_k max_{μ_k,σ_k} corr^2(W_loc,k, g_{μ_k,σ_k})
-          - λ Ω(R)
-```
-
-当前 greedy selection 是近似版，容易受 z-order 和 dictionary grid 影响。
-
-这也是为什么 quick/full 容易选出 F=6，而 wide 才能稳定到 F=3。
-
----
-
-## 6. H-side dependency
-
-有了 localized components 后，计算：
-
-```text
-H_loc = X W_loc
-```
-
-然后对每对 components 计算 H-side nonlinear dependency。
-
-当前默认使用 distance correlation：
-
-```text
-dCor^2(X,Y)
-= dCov^2(X,Y) / sqrt(dVar(X) dVar(Y))
-```
-
-它比线性相关更适合检测：
-
-```text
-q, q^2, q^3, q^4
-```
-
-之间的非线性依赖。
-
-数学直觉是：
-
-```text
-如果 components 属于同一个 latent q_g 的不同内部维度，
-它们的 H expression 应有非线性依赖。
-```
-
-### H dependency 阶段的问题
-
-#### 问题 H1：H_loc = X W_loc 不是严格 demixing
-
-如果 `W_loc` 不是正交基，那么：
-
-```text
-H = X W_loc
-```
-
-只是 projection score，不是 least-squares coefficient。
-
-更严格的估计应为：
-
-```text
-H = X W_loc (W_loc^T W_loc + λI)^(-1)
-```
-
-否则 H dependency 可能混入 loading overlap 的影响。
-
-#### 问题 H2：H dependency 没有 null
-
-distance correlation 在高自相关时间序列和 trial-structured data 中可能偏高。
-
-应加入：
-
-```text
-phase-shift null
-trial-shuffle null
-within-condition permutation
-```
-
-否则 H-side dependency 可能把共同 trial/time structure 当成同一功能组证据。
-
----
-
-## 7. Block graph：从 K components 到 F functional blocks
-
-当前 block graph 融合三类证据。
-
-### 7.1 W-center proximity
-
-若两个 components 的 Gaussian center 接近：
-
-```text
-P^W_{ij}
-= exp(-(μ_i - μ_j)^2 / (2 τ_μ^2))
-```
-
-说明它们可能属于同一个 spatial cluster。
-
-### 7.2 H-side dependency
-
-记：
-
-```text
-P^H_{ij} = dCor(h_i, h_j)
-```
-
-说明它们可能属于同一个 latent process 的不同内部维度。
-
-### 7.3 split reliability
-
-当前使用每个 component 的 split correlation：
-
-```text
-s_i = split_corr(component i)
-```
-
-构造 pair reliability：
-
-```text
-S^split_{ij} = sqrt(s_i s_j)
-```
-
-### 7.4 最终 graph
-
-```text
-G_{ij}
-= P^W_{ij}
-  × (P^H_{ij})^α
-  × (S^split_{ij})^β
-```
-
-对 `F = 1,...,Fmax` 做 spectral clustering。
-
-### 7.5 F score
-
-当前 score 是：
-
-```text
-Score(F)
-= mean(G_within)
-  - mean(G_between)
-  + 0.35 [mean(H_within) - mean(H_between)]
-  - λ_F F
-  - λ_singleton N_singleton
-```
-
-选择：
-
-```text
-F_selected = argmax_F Score(F)
-```
-
-### Block graph 阶段的问题
-
-#### 问题 B1：score 容易偏向过分裂
-
-当 F 增大时，cluster 变小，within pair 更容易变得相似：
-
-```text
-mean(G_within) 上升
-```
-
-如果复杂度惩罚不够强，就会过选 F。
-
-现有结果正好表现为：
-
-```text
-quick: F=6
-full:  F=6
-wide:  F=3
-```
-
-说明 F selection 对 z/localization 稳定性很敏感。
-
-#### 问题 B2：当前 split survival 不是真正的 block survival
-
-当前使用的是：
-
-```text
-sqrt(split_corr_i split_corr_j)
-```
-
-这只是 component-level reliability。
-
-真正的 block survival 应该是：
-
-```text
-C_ij = (1/S) Σ_s 1[component i and j assigned to same block in split s]
-```
-
-然后：
-
-```text
-G_ij = P^W_ij × P^H_ij × C_ij
-```
-
-也就是说，要看一对 components 是否在多个 split 的独立 block discovery 中反复被分到一起。
-
-#### 问题 B3：没有报告 toy-only block recovery 指标
-
-toy 中我们知道 true group assignment。
-
-因此应报告：
-
-```text
-ARI
-NMI
-pairwise same-block precision/recall
-confusion matrix
-```
-
-否则 F=3 即使出现，也不知道是不是正确 grouping。
-
----
-
-## 8. F evidence proxy：当前最不可靠的一块
-
-v12.6 增加了 post-hoc Bayesian model reduction proxy for F。
-
-当前写法大致是：
-
-```text
-accuracy_F
-= n_edges × [
-    graph_within_mean - graph_between_mean
-    + 0.35(h_within_mean - h_between_mean)
-  ]
-```
-
-复杂度：
-
-```text
-complexity_F
-= 0.5 × (2F + F-1) × log(n_edges)
-```
-
-再加 soft penalty：
-
-```text
-free_energy_F = accuracy_F - complexity_F - soft_penalty
-```
-
-### 这里的问题
-
-#### 问题 E1：F=1 退化
-
-当 `F=1` 时，没有 between-block edge。
-
-当前逻辑相当于：
-
-```text
-graph_between_mean = 0
-h_between_mean = 0
-```
-
-所以 F=1 会得到不公平的 accuracy：
-
-```text
-accuracy_1 = n_edges × graph_within_mean
-```
-
-但这不是“one-block model 的解释力”，只是因为没有 between 对照。
-
-这导致现有 quick/full/wide 中：
-
-```text
-F_selected_by_evidence = 1
-posterior_prob_proxy ≈ 0.997 到 0.999
-```
-
-因此目前这个 F evidence proxy 不能作为诊断证据。
-
-#### 问题 E2：accuracy 与 complexity 不在同一个概率模型内
-
-`accuracy` 是 graph contrast，`complexity` 是 BIC-like penalty。
-
-但没有明确假设：
-
-```text
-G_ij | same block
-G_ij | different block
-```
-
-的概率分布。
-
-如果要做真正的 evidence，应建立类似 weighted stochastic block model：
-
-```text
-G_ij ~ distribution(θ_same) if c_i = c_j
-G_ij ~ distribution(θ_diff) if c_i != c_j
-```
-
-然后比较不同 F 的 likelihood 和 complexity。
-
----
-
-## 9. Noise-probe z/order stability
-
-v12.6 另一个新增诊断是 noise probe。
-
-给定 `W_final` 的正交基：
-
-```text
-Q = orth(W_final)
-```
-
-先算 base z：
-
-```text
-z_base = spectral_z(Q)
-```
-
-然后重复加小扰动：
-
-```text
-Q' = Q + noise
-z' = spectral_z(Q')
-```
-
-检查：
-
-```text
-Spearman(z', z_base)
-neighbor_preservation(z', z_base)
-```
-
-直觉是：
-
-```text
-真实稳定的 z/order 应该对小扰动稳定；
-gauge artifact 会大幅波动。
-```
-
-### noise probe 阶段的问题
-
-#### 问题 N1：镜像方向 bug 影响 Spearman
-
-如前所述：
-
-```text
-z 和 1-z
-```
-
-是同一个 ordering 的镜像。
-
-若不正确对齐，Spearman 可能变负或接近 0。
-
-当前 quick 中出现：
-
-```text
-z_spearman_to_base_mean ≈ 0.0015
-z_neighbor_preservation_mean ≈ 0.72
-```
-
-这说明局部邻域有一定保持，但全局方向/排序指标没有被正确处理或本身很不稳。
-
-#### 问题 N2：扰动 Q 不等于 split-level stability
-
-向 Q 加噪声测试的是：
-
-```text
-spectral z 对小数值扰动的敏感性
-```
-
-但更重要的是：
-
-```text
-重新抽 trial split 后，W_final 和 z 是否稳定？
-```
-
-因此更强的 probe 应该是：
-
-```text
-for each bootstrap/split:
-    rerun K discovery
-    estimate z
-    align z
-    compare order/neighborhood/block graph
-```
-
----
-
-## 10. 当前模型的层级解释
-
-现在最合理的解释层级是：
-
-### Level 1: reliable subspace
-
-这是目前最可信的输出。
-
-```text
-span(W_final)
-```
-
-如果 K=12 在 reliability、held-out gain 和 evidence 中都稳定出现，可以说：
-
-> 数据支持约 12 个可重复 neural loading dimensions。
-
-### Level 2: localized components
-
-这一步需要更谨慎。
-
-```text
-W_loc, H_loc
-```
-
-它依赖：
-
-- z/order 是否稳定；
-- Gaussian dictionary 是否合理；
-- greedy localization 是否找到正确 rotation；
-- residualization 后 μ/σ 是否仍可解释。
-
-所以目前只能说：
-
-> 在可靠 subspace 内，我们尝试寻找 Gaussian-localized component basis。
-
-不能过早说：
-
-> 已恢复真实 components。
-
-### Level 3: functional blocks
-
-这是最不稳定的一层。
-
-```text
-F_selected
-block assignment
-```
-
-目前 wide 可以选 F=3，但 quick/full 仍容易 F=6。
-
-因此现在更准确的说法是：
-
-> block graph route 有希望，但 F discovery 仍受 localization 和 score calibration 限制。
-
----
-
-## 11. 我认为当前成果最强的部分
-
-### 11.1 从不可识别 toy 到可识别 toy
-
-这是很重要的理论进步。
-
-你们没有继续调参硬救旧 toy，而是发现了问题在：
-
-```text
-rank(W_g) 与 rank(H_g) 不支持目标 K/F
-```
-
-于是先修改数据生成条件，让恢复目标变得公平。
-
-这是很正确的建模态度。
-
-### 11.2 K discovery 主线已经比较成熟
-
-核心不是 PCA variance，而是：
-
-```text
-split-repeat reliability
-+ residual iteration
-+ held-out gain
-+ evidence-style tail penalty
-```
-
-这条路线与最初 v1 的 representation/interpretation 分离是一致的。
-
-### 11.3 F 不再由 W-atlas reconstruction 决定
-
-从 v12.2-v12.4 到 v12.6，已经避免了一个大坑：
-
-```text
-用 W-atlas fit 直接决定 F
-```
-
-现在改成：
-
-```text
-稳定 K 后，再看 W-center + H-dependency + split evidence
-```
-
-方向是对的。
-
----
-
-## 12. 当前最需要修的地方
-
-### 优先级 1：修正 z orientation 与 noise probe
-
-这是小改动，但会直接影响诊断解释。
-
-应改为：
-
-```text
-if corr(z, target) < 0:
-    z = 1 - z
-```
-
-或者报告：
-
-```text
-orientation_invariant_spearman
-= max(spearman(z, base), spearman(1-z, base))
-```
-
-### 优先级 2：修正 localization 的 diversity 与 μ/σ
-
-需要把 residualization 前后的量区分清楚：
-
-```text
-raw_atom
-projected_atom
-residualized_atom
-final_W_component
-```
-
-并对 final component 重新估计 center：
-
-```text
-μ_final, σ_final
-```
-
-否则 block graph 的 spatial term 不可靠。
-
-### 优先级 3：F evidence proxy 暂时不要使用
-
-目前它系统性选 F=1，应在报告里标注：
-
-```text
-F evidence proxy is diagnostic only and currently not calibrated.
-```
-
-修法：
-
-1. F=1 单独作为 null baseline，不参与同一 accuracy 公式；
-2. 或建立 weighted SBM likelihood；
-3. 或用 held-out edge prediction / split co-association likelihood。
-
-### 优先级 4：加入真正的 split block survival
-
-应该实现：
-
-```text
-for each split:
-    localize components
-    compute graph
-    cluster F
-    record same-block matrix
-
-C_ij = mean_s 1[c_i^s = c_j^s]
-```
-
-然后 block graph 使用：
-
-```text
-G_ij = P^W_ij × P^H_ij × C_ij
-```
-
-这会比当前 `sqrt(split_corr_i split_corr_j)` 更接近理论。
-
-### 优先级 5：做 toy-only recovery metrics
-
-既然 toy 中有 true group，应直接报告：
-
-```text
-K_selected
-subspace R2 to W_true
-z Spearman / Kendall / neighbor preservation
-component center error
-ARI for block assignment
-pairwise same-block precision/recall
-```
-
-这样可以分清：
-
-```text
-K 错了？
-z 错了？
-localization 错了？
-block graph score 错了？
-```
-
----
-
-## 13. 建议下一轮 debug 实验
-
-### 实验 A：oracle z
-
-使用 true z，只测试 localization + block graph。
-
-如果 oracle z 下仍不能稳定 F=3，问题在：
-
-```text
-localization / H-dependency / F score
-```
-
-如果 oracle z 下 F=3 稳定，问题主要在：
-
-```text
-z/order recovery
-```
-
-### 实验 B：oracle component centers
-
-用 true component centers 构造 spatial graph，只测试 H-dependency 和 F score。
-
-如果仍失败，说明 block graph objective 本身有问题。
-
-### 实验 C：rank-1 negative control
-
-rank1 toy 中 group 内 W 接近共线，理论上不应支持 K=12 和 F=3。
-
-当前 rank1_debug 结果：
-
-```text
-K_final = 7
-F_score = 5
-```
-
-这说明模型确实不会盲目给 K=12，但 F score 仍会从不充分可识别结构中分出多个 blocks。
-
-这应作为 negative-control failure signal。
-
-### 实验 D：nested evidence
-
-把 trials 分成：
-
-```text
-train / validation / test
-```
-
-其中：
-
-- train 用来发现 directions；
-- validation 用来调 acceptance；
-- test 用来计算 K evidence。
-
-如果 K=12 仍然稳定，K evidence 才更可信。
-
-### 实验 E：split co-association block survival
-
-对每个 split 独立跑 localization + block graph，计算：
-
-```text
-C_ij = P(i,j same block)
-```
-
-如果 true group 内的 `C_ij` 明显高于组间，F discovery 才真正稳定。
-
----
-
-## 14. 最简数学故事
-
-如果要把现在的模型写成论文方法的核心数学故事，可以这样说：
-
-1. 神经数据被视为低秩 expression 的叠加：
-
-```text
-X = H W^T + ε
-```
-
-2. 由于 H/W 分解有旋转不辨识性，我们不先解释单个 component，而先寻找可重复 loading subspace：
-
-```text
-C_rel w = λ w
-```
-
-3. 可靠 K 由 residual-driven split-repeat eigen-directions 和 held-out gain 共同决定：
-
-```text
-K = arg stop where new reliable direction no longer improves held-out fit
-```
-
-4. 在稳定 K 维 subspace 内，再加入 localization prior，寻找 Gaussian-like component basis：
-
-```text
-W_loc = Q R
-```
-
-5. 功能 block 不由 W 空间单独决定，而由 spatial proximity、H-side nonlinear dependency 和 split stability 共同决定：
-
-```text
-G_ij = P^W_ij (P^H_ij)^α (S^split_ij)^β
-```
-
-6. 最终 block 是解释层对象，不等同于原始 recovered component：
-
-```text
-components -> functional blocks
-```
-
-### 这套故事成立的前提
-
-1. 目标 K/F 在数据中可识别；
-2. split-repeat reliability 真能区分 signal 与 noise；
-3. localized component basis 能稳定从 reliable subspace 中恢复；
-4. H dependency 不是共同时间结构造成的假相关；
-5. block graph score 不系统性过分裂或欠分裂；
-6. evidence proxy 不重复使用验证集，也不退化到 trivial model。
-
-目前第 1、2 条比较强；第 3、4、5、6 条还需要继续修。
-
----
-
-## 15. 当前审查判断
-
-我目前会这样评价 v12.6：
-
-```text
-K discovery:        基本方向正确，已有较强证据，但 evidence 需要 nested test 修正。
-z/order recovery:   当前瓶颈之一，orientation 和 stability 指标需要修。
-localization:       方向正确，但 greedy/residualization 细节会污染 μ/σ。
-F block graph:      有希望，但 quick/full 过分裂，split survival 尚未真正实现。
-F evidence proxy:   当前不可用，系统性退化到 F=1。
-negative control:   rank1 能降低 K，但 F 仍过分裂，需要加强拒绝机制。
-```
-
-所以，当前最稳的科学结论应该写成：
-
-> 我们可以比较稳定地从可识别 toy 中发现 K≈12 的 reliable neural subspace；但从 reliable subspace 到 localized components，再到 F=3 functional blocks 的解释链仍需修正 z/order、localization、split block survival 与 F evidence calibration。
-
-这句话保守，但准确。
+如果这六点修完，模型叙事会从“有一个很有想象力的 pipeline”变成“有清楚可检验边界的数学模型”。这会更利于后面写成正式论文或技术报告。
