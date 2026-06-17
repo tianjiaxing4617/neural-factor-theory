@@ -134,3 +134,42 @@ D_true_auc_like = 0.9942
 This means quick mode already shows a useful pattern: W/H subspaces are strong,
 but localized D/block separation is much weaker than the true D separation.
 That is exactly the next optimization target.
+
+## Wide baseline result on this machine
+
+The wide run also completed successfully with:
+
+```text
+K_selected = 12
+K_eff_posterior = 12
+K_eff_soft = 11.9234
+F_selected = 3
+F_selected_by_score = 5
+all_data_R2 = 0.9721
+localized_R2_X = 0.9721
+```
+
+Key wide diagnostic signals:
+
+```text
+W_raw_subspace_angle_mean_deg = 5.7528
+W_raw_subspace_angle_max_deg = 15.5785
+H_raw_subspace_angle_mean_deg = 2.7824
+H_raw_subspace_angle_max_deg = 5.2927
+selected_block_ARI_vs_nearest_true_group = 0.5119
+coassociation_auc_like = 0.9877
+D_localized_auc_like = 0.8320
+D_true_auc_like = 0.9838
+center_match_max_error = 0.3000
+```
+
+Interpretation:
+
+```text
+W/H subspaces are recovered well.
+The posterior co-association matrix is already strong.
+D_localized is better than quick mode but still weaker than D_true.
+One localized component is pulled to the left boundary center 0.02, so the next
+optimization target is the localization/componentization step rather than the
+global K discovery step.
+```
