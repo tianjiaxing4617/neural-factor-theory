@@ -1,0 +1,8 @@
+{
+  "toy": {"n_trials": 50, "n_time": 45, "n_neurons": 65, "noise_sd": 0.04},
+  "iterative": {"max_K": 16, "candidate_top": 3, "als_iters": 5, "n_residual_splits": 35, "n_null": 25, "min_gain_val": 0.0010, "patience": 2},
+  "localization": {"center_grid_size": 240},
+  "block": {"F_grid": [1, 2, 3, 4, 5, 6], "kmeans_starts": 40},
+  "posterior": {"enable_prune": true, "inclusion_threshold": 0.55, "prune_threshold": 0.25},
+  "block_posterior": {"n_runs": 36}
+}
