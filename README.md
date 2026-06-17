@@ -6,6 +6,7 @@ This repository collects the evolving theory, mathematical audits, and code revi
 
 - `docs/math_review_v12_6.md` - v12.6 mathematical derivation and model-risk audit.
 - `docs/theory_evolution_v1_to_v12_5.md` - theory evolution summary from v1 to v12.5.
+- `docs/iterative_bayesian_wk_optimization_v13_2.md` - v13.2 iterative Bayesian W/H/K/block posterior-coupling optimization plan.
 
 ## Working Convention
 
