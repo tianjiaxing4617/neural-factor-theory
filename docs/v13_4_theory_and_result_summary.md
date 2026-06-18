@@ -512,7 +512,7 @@ R_{\mathrm{CE}}(z)
 同时用 weighted-SBM/MDL 检查 partition 是否需要过多参数解释 PSM。对 block pair $(r,s)$，定义：
 
 ```math
-\widehat p_{rs}
+\widehat{p}_{rs}
 =
 \mathrm{mean}
 \left(
@@ -527,10 +527,10 @@ C_{ij}: z_i=r, z_j=s
 =
 \sum_{i<j}
 \left[
-C_{ij}\log \widehat p_{z_i z_j}
+C_{ij}\log \widehat{p}_{z_i,z_j}
 +
 (1-C_{ij})
-\log(1-\widehat p_{z_i z_j})
+\log(1-\widehat{p}_{z_i,z_j})
 \right].
 ```
 
