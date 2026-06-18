@@ -2,6 +2,8 @@
 
 本文总结截至 v13.4 的核心数学思路、模型推导、方法选择理由与实验诊断结果。
 
+如果需要逐函数对齐代码实现，请先看 [v13_4_code_aligned_method_details.md](v13_4_code_aligned_method_details.md)。本文是理论总结，但关键流程应以那份代码对齐说明为准。
+
 当前阶段的结论可以先说在前面：这条路线已经从“直接寻找 hard components / hard blocks”转向了“先恢复可解释的因子子空间，再用 posterior coassociation 总结 block 结构”。这个转向是合理的，因为神经因子分解天然存在旋转不唯一性，直接要求每一个 component 完全可识别会让模型过于脆弱；而 block posterior、PSM kernel、以及 loss-calibrated posterior partition summary 更接近这个问题真正可稳定识别的对象。
 
 v13.4 的作用不是重新发明整个模型，而是修正 v13.3 的一个关键问题：PSM/spectral 方法本身有效，但 affinity-only 的候选评分有时会偏向 over-split。v13.4 用 weighted Binder risk、PSM cross-entropy、weighted-SBM/MDL 和 F posterior support 构成一个 posterior-loss calibrated objective，让最终的 block summary 不再靠人为指定 posterior F，而是由 posterior clustering loss 自动选择。
@@ -105,61 +107,76 @@ X_g(t,n)
 
 这个思路比直接 hard kmeans 更稳，因为它承认了旋转不唯一性，同时把可识别的 block posterior 保留下来。
 
-## 3. K 的发现：residual-driven iterative expansion
+## 3. K 的发现：residual split-repeat reliable expansion
 
-给定一个候选 $K$，我们通过 ridge ALS 拟合：
+这里必须说清楚：当前 v13.4 不是普通 PCA，也不是简单寻找残差最大方差方向。K 的发现来自 residual split-repeat reliability。
+
+假设已经接受了 $q$ 个 components，对训练数据做 global ALS refit 后，取当前 W 子空间的正交基 $Q_q$。代码先把训练数据投影到已接受子空间的正交补上：
 
 ```math
-(\widehat H_K,\widehat W_K)
+R_q = X_{\mathrm{train}} - X_{\mathrm{train}} Q_q Q_q^\top.
+```
+
+然后反复把 train trials 随机拆成 A/B 两半。每次 split 中，A 半和 B 半分别取 trial mean，得到两个残差视图，再做 z-score 并堆叠成：
+
+```math
+X_A \in \mathbb{R}^{S\times N},
+\qquad
+X_B \in \mathbb{R}^{S\times N}.
+```
+
+候选方向不是由单边方差决定，而是由 A/B 之间的重复性矩阵决定：
+
+```math
+C_{\mathrm{rel}}
 =
-\arg\min_{H,W}
-\|Y - H W^\top\|_F^2
-+ \lambda_H \|H\|_F^2
-+ \lambda_W \|W\|_F^2.
+{X_A^\top X_B + X_B^\top X_A \over 2(S-1)}.
 ```
 
-对应残差为
+如果某个 residual component 真实存在，它应该在 A 和 B 两个独立片段里都出现，因此对应的 W 方向在 cross-split matrix 里会稳定变强。若只是噪声，它通常不会跨 split 重复。
+
+同时，代码会投影掉已经接受的 W 子空间：
 
 ```math
-R_K = Y - \widehat H_K \widehat W_K^\top.
+P_q = I-Q_qQ_q^\top,
+\qquad
+C_{\mathrm{rel}}\leftarrow P_q C_{\mathrm{rel}} P_q.
 ```
 
-每一步从残差中寻找新的可靠方向。直觉上，如果 $R_K$ 中仍然存在可重复、非噪声的结构，那么 $K$ 还不够。候选方向需要同时满足两类证据：
+这一步避免重复发现已经接受过的 component。代码还会计算候选方向与旧 W 子空间的最大相关：
 
 ```math
-\Delta R^2_{\mathrm{val}} \gt \tau_R,
+d(v) = \max_j |\langle q_j,v\rangle|.
 ```
 
-以及 residual reliability 大于 null：
+若 $d(v)$ 超过 `max_duplicate_corr`，该候选会被跳过。这里的关键区分是：
+
+1. split-repeat reliable：候选方向跨 A/B split 重复出现，这是我们想要的。
+2. duplicate with accepted W：候选方向重复已有 component，这是要避免的。
+
+为了校准 residual repeat evidence，代码打乱 $X_B$ 的行，破坏 A/B 的对应关系，得到 null top eigenvalue 分布。候选 evidence 为：
 
 ```math
-\frac{s_1(R_K)}{Q_{\mathrm{null}}(s_1)} \gt \tau_s.
-```
-
-其中 $s_1(R_K)$ 表示残差主方向强度，$Q_{\mathrm{null}}(s_1)$ 表示打乱或 null 过程下主方向强度的参考分位数。
-
-接受新 component 后，不是只追加一列，而是全局 refit：
-
-```math
-(\widehat H_{K+1},\widehat W_{K+1})
+E_{\mathrm{rel}}
 =
-\arg\min_{H,W}
-\|Y - H W^\top\|_F^2
-+ \lambda_H \|H\|_F^2
-+ \lambda_W \|W\|_F^2.
+{\lambda_{\mathrm{cand}} \over Q_{\mathrm{null}}}.
 ```
 
-这一步很重要，因为新方向加入后，旧方向也应该重新分配解释量。v13.4 wide 中该过程恢复：
+非 duplicate candidate 会被加入 W，随后用 ALS 在 train trials 上 global refit，再在 validation trials 上计算 projection R-squared。接受新 component 需要同时满足：
 
 ```math
-K_{\mathrm{selected}} = 12.
+\Delta R^2_{\mathrm{val}} \ge \tau_{\mathrm{val}},
 ```
-
-同时 posterior active K 也为：
 
 ```math
-K_{\mathrm{eff,posterior}} = 12.
+\Delta R^2_{\mathrm{train}} \ge \tau_{\mathrm{train}},
 ```
+
+```math
+E_{\mathrm{rel}} \ge \tau_{\mathrm{rel}}.
+```
+
+因此当前 K 的准确含义是：残差中能跨 split 重复出现、强于 null、并且能提升 held-out reconstruction 的可靠方向数量。它不是传统 PCA rank，也不是单纯最大方差方向。
 
 ## 4. Component posterior 与 ARD-style pruning
 
