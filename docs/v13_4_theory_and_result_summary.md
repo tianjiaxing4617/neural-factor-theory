@@ -428,21 +428,14 @@ v13.4 的核心变化是用 posterior clustering decision loss 选择最终 summ
 weighted Binder risk 定义为：
 
 ```math
-R_{\mathrm{Binder}}(z)
-=
-\frac{1}{|\mathcal P|}
-\sum_{i<j}
-\left[
-a C_{ij} I(z_i \neq z_j)
-+ b(1-C_{ij}) I(z_i = z_j)
-\right],
+N_p = K(K-1)/2.
 ```
-
-其中 $I(\cdot)$ 表示 indicator function，
 
 ```math
-\mathcal P=\{(i,j):i<j\}.
+R_B(z) = N_p^{-1}\sum_{i<j} ( a C_{ij} I(z_i \neq z_j) + b(1-C_{ij}) I(z_i = z_j) ).
 ```
+
+其中 `I(.)` 表示 indicator function，`N_p` 表示所有 component pair 的数量。
 
 v13.4 使用：
 
@@ -492,53 +485,29 @@ C_{ij} > \frac{b}{a+b}.
 v13.4 还加入 PSM cross-entropy：
 
 ```math
-R_{\mathrm{CE}}(z)
-=
--\frac{1}{|\mathcal P|}
-\sum_{i<j}
-\left[
-I(z_i = z_j)\log C_{ij}
-+
-I(z_i \neq z_j)\log(1-C_{ij})
-\right].
+R_{CE}(z) = -N_p^{-1}\sum_{i<j} ( I(z_i = z_j)\log C_{ij} + I(z_i \neq z_j)\log(1-C_{ij}) ).
 ```
 
 同时用 weighted-SBM/MDL 检查 partition 是否需要过多参数解释 PSM。对 block pair $(r,s)$，定义：
 
 ```math
-\widehat{p}_{rs}
-=
-\mathrm{mean}
-\left(
-C_{ij}: z_i=r, z_j=s
-\right).
+N_{rs} = \sum_{i<j} I(z_i=r,z_j=s).
+```
+
+```math
+p^*_{rs} = N_{rs}^{-1}\sum_{i<j} I(z_i=r,z_j=s) C_{ij}.
 ```
 
 其 Bernoulli-style weighted log likelihood 为：
 
 ```math
-\ell_{\mathrm{SBM}}(z)
-=
-\sum_{i<j}
-\left[
-C_{ij}\log \widehat{p}_{z_i,z_j}
-+
-(1-C_{ij})
-\log(1-\widehat{p}_{z_i,z_j})
-\right].
+l_{SBM}(z) = \sum_{i<j} ( C_{ij}\log p^*_{z_i,z_j} + (1-C_{ij})\log(1-p^*_{z_i,z_j}) ).
 ```
 
 MDL risk 为：
 
 ```math
-R_{\mathrm{MDL}}(z)
-=
-\frac{
--\ell_{\mathrm{SBM}}(z)
-+ \frac{1}{2} q(z)\log |\mathcal P|
-}{
-|\mathcal P|
-},
+R_{MDL}(z) = N_p^{-1} ( -l_{SBM}(z) + 0.5 q(z)\log N_p ).
 ```
 
 其中 $q(z)$ 是有效 block-pair 参数数。
@@ -546,16 +515,7 @@ R_{\mathrm{MDL}}(z)
 最终 v13.4 loss 可以写成：
 
 ```math
-L_{13.4}(z)
-=
-R_{\mathrm{Binder}}(z)
-+ \lambda_{\mathrm{CE}}R_{\mathrm{CE}}(z)
-+ \lambda_{\mathrm{MDL}}R_{\mathrm{MDL}}(z)
-+ \lambda_F F(z)
-+ P_{\mathrm{singleton}}(z)
-- \lambda_A \Delta_A(z)
-- \lambda_B B(z)
-- \lambda_P \log\frac{P(F(z))}{P_0(F(z))}.
+L(z) = R_B(z) + \lambda_{CE}R_{CE}(z) + \lambda_{MDL}R_{MDL}(z) + \lambda_F F(z) + P_{sing}(z) - \lambda_A \Delta_A(z) - \lambda_B B(z) - \lambda_P \log(P(F(z))/P_0(F(z))).
 ```
 
 其中 $\Delta_A(z)$ 是 affinity within-between contrast，$B(z)$ 是 block-size balance，$P(F)$ 是前面得到的 block-count posterior，$P_0(F)$ 是 uniform baseline prior。
@@ -563,13 +523,10 @@ R_{\mathrm{Binder}}(z)
 最终选择：
 
 ```math
-\widehat z
-=
-\arg\min_{z\in\mathcal Z}
-L_{13.4}(z).
+L(\widehat z) = \min_{z\in Z} L(z).
 ```
 
-这里的候选集合 $\mathcal Z$ 包括：
+这里的候选集合 $Z$ 包括：
 
 1. PSM spectral。
 2. PSM spatial spectral。
@@ -630,27 +587,27 @@ v13.4 wide 的核心结果为：
 
 | 指标 | 数值 |
 |---|---:|
-| $K_{\mathrm{true}}$ | 12 |
-| $K_{\mathrm{selected}}$ | 12 |
-| $K_{\mathrm{eff,posterior}}$ | 12 |
-| $K_{\mathrm{eff,soft}}$ | 11.9099 |
-| $F_{\mathrm{true}}$ | 3 |
-| $F_{\mathrm{selected}}$ | 3 |
+| K_true | 12 |
+| K_selected | 12 |
+| K_eff_posterior | 12 |
+| K_eff_soft | 11.9099 |
+| F_true | 3 |
+| F_selected | 3 |
 | v13.4 selected method | psm_spectral |
 | v13.4 selected F | 3 |
-| all-data $R^2$ | 0.9711 |
-| localized $R^2$ | 0.9711 |
+| all-data R-squared | 0.9711 |
+| localized R-squared | 0.9711 |
 
 空间恢复诊断：
 
 | 指标 | 数值 |
 |---|---:|
-| $W$ subspace angle mean | 6.0082 deg |
-| $W$ subspace angle max | 16.9800 deg |
-| $H$ subspace angle mean | 2.8223 deg |
-| $H$ subspace angle max | 5.3814 deg |
-| $W$ min canonical correlation | 0.9564 |
-| $H$ min canonical correlation | 0.9956 |
+| W subspace angle mean | 6.0082 deg |
+| W subspace angle max | 16.9800 deg |
+| H subspace angle mean | 2.8223 deg |
+| H subspace angle max | 5.3814 deg |
+| W min canonical correlation | 0.9564 |
+| H min canonical correlation | 0.9956 |
 | center match MAE | 0.0233 |
 | center match max error | 0.0583 |
 
@@ -668,12 +625,12 @@ $D$ 空间诊断：
 
 | 指标 | 数值 |
 |---|---:|
-| $D_{\mathrm{localized}}$ AUC-like | 0.9097 |
-| $D_{\mathrm{true}}$ AUC-like | 0.9838 |
-| $D_{\mathrm{localized}}$ within mean | 0.3223 |
-| $D_{\mathrm{localized}}$ between mean | 0.1434 |
-| $D_{\mathrm{localized}}$ mean diff | 0.1790 |
-| $D_{\mathrm{true}}$ mean diff | 0.3016 |
+| D_localized AUC-like | 0.9097 |
+| D_true AUC-like | 0.9838 |
+| D_localized within mean | 0.3223 |
+| D_localized between mean | 0.1434 |
+| D_localized mean diff | 0.1790 |
+| D_true mean diff | 0.3016 |
 
 v13.4 loss-selected candidate：
 
@@ -688,7 +645,7 @@ v13.4 loss-selected candidate：
 | selected F by score | 5 | 3 |
 | selected block ARI | 0.5119 | 1.0000 |
 | coassociation AUC-like | 0.9877 | 1.0000 |
-| $D_{\mathrm{localized}}$ AUC-like | 0.8320 | 0.9097 |
+| D_localized AUC-like | 0.8320 | 0.9097 |
 | center max error | 0.3000 | 0.0583 |
 
 注意：v13.3 中 `psm_spatial_spectral` 在 posterior F=3 条件下也能达到 ARI=1.0；问题是它自己的 affinity-only score 会倾向 F=4。v13.4 的意义就是不再需要手工指定 F，而是让 posterior loss 自动选择 F=3。
