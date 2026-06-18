@@ -127,13 +127,13 @@ R_K = Y - \widehat H_K \widehat W_K^\top.
 每一步从残差中寻找新的可靠方向。直觉上，如果 $R_K$ 中仍然存在可重复、非噪声的结构，那么 $K$ 还不够。候选方向需要同时满足两类证据：
 
 ```math
-\Delta R^2_{\mathrm{val}} > \tau_R,
+\Delta R^2_{\mathrm{val}} \gt \tau_R,
 ```
 
 以及 residual reliability 大于 null：
 
 ```math
-\frac{s_1(R_K)}{Q_{\mathrm{null}}(s_1)} > \tau_s.
+\frac{s_1(R_K)}{Q_{\mathrm{null}}(s_1)} \gt \tau_s.
 ```
 
 其中 $s_1(R_K)$ 表示残差主方向强度，$Q_{\mathrm{null}}(s_1)$ 表示打乱或 null 过程下主方向强度的参考分位数。
@@ -183,7 +183,7 @@ K_{\mathrm{eff,posterior}} = 12.
 若
 
 ```math
-\pi_k < \tau_{\mathrm{prune}},
+\pi_k \lt \tau_{\mathrm{prune}},
 ```
 
 则 component 可以被剪枝。v13.4 wide 中没有 component 被剪枝：
@@ -423,7 +423,7 @@ v13.3 的发现是：PSM 方向有效，但 affinity-only score 会偏向 over-s
 
 v13.4 的核心变化是用 posterior clustering decision loss 选择最终 summary partition。
 
-令候选 partition 为 $z$。对于每一对 component $i<j$，若 candidate 把它们分开，则损失 posterior same-block evidence；若 candidate 把它们合并，则损失 posterior different-block evidence。
+令候选 partition 为 $z$。对于每一对 component pair，若 candidate 把它们分开，则损失 posterior same-block evidence；若 candidate 把它们合并，则损失 posterior different-block evidence。
 
 weighted Binder risk 定义为：
 
@@ -432,7 +432,7 @@ N_p = K(K-1)/2.
 ```
 
 ```math
-R_B(z) = N_p^{-1}\sum_{i<j} ( a C_{ij} I(z_i \neq z_j) + b(1-C_{ij}) I(z_i = z_j) ).
+R_B(z) = N_p^{-1}\sum_{i \lt j} ( a C_{ij} I(z_i \neq z_j) + b(1-C_{ij}) I(z_i = z_j) ).
 ```
 
 其中 `I(.)` 表示 indicator function，`N_p` 表示所有 component pair 的数量。
@@ -462,13 +462,13 @@ aC_{ij}.
 合并更优当且仅当
 
 ```math
-b(1-C_{ij}) < a C_{ij}.
+b(1-C_{ij}) \lt a C_{ij}.
 ```
 
 因此
 
 ```math
-C_{ij} > \frac{b}{a+b}.
+C_{ij} \gt \frac{b}{a+b}.
 ```
 
 在 v13.4 中：
@@ -485,23 +485,23 @@ C_{ij} > \frac{b}{a+b}.
 v13.4 还加入 PSM cross-entropy：
 
 ```math
-R_{CE}(z) = -N_p^{-1}\sum_{i<j} ( I(z_i = z_j)\log C_{ij} + I(z_i \neq z_j)\log(1-C_{ij}) ).
+R_{CE}(z) = -N_p^{-1}\sum_{i \lt j} ( I(z_i = z_j)\log C_{ij} + I(z_i \neq z_j)\log(1-C_{ij}) ).
 ```
 
 同时用 weighted-SBM/MDL 检查 partition 是否需要过多参数解释 PSM。对 block pair $(r,s)$，定义：
 
 ```math
-N_{rs} = \sum_{i<j} I(z_i=r,z_j=s).
+N_{rs} = \sum_{i \lt j} I(z_i=r,z_j=s).
 ```
 
 ```math
-p^*_{rs} = N_{rs}^{-1}\sum_{i<j} I(z_i=r,z_j=s) C_{ij}.
+p^*_{rs} = N_{rs}^{-1}\sum_{i \lt j} I(z_i=r,z_j=s) C_{ij}.
 ```
 
 其 Bernoulli-style weighted log likelihood 为：
 
 ```math
-l_{SBM}(z) = \sum_{i<j} ( C_{ij}\log p^*_{z_i,z_j} + (1-C_{ij})\log(1-p^*_{z_i,z_j}) ).
+l_{SBM}(z) = \sum_{i \lt j} ( C_{ij}\log p^*_{z_i,z_j} + (1-C_{ij})\log(1-p^*_{z_i,z_j}) ).
 ```
 
 MDL risk 为：
